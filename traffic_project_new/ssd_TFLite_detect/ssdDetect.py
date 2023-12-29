@@ -137,7 +137,8 @@ class polygon_calculate():
         point_Infor = {
             "Left":False,
             "Right":False,
-            "Forbidden":False,
+            "Forbidden_left":False,
+            "Forbidden_right":False,
             "freeze" :False
         }
         for i in range(len(points)):
@@ -147,13 +148,13 @@ class polygon_calculate():
             if self.isInside(polygon['left'], point_new):
                 point_Infor['Left'] = True
                 if self.distance(point_new,point_old,self.points['left_check']) > 0:
-                    point_Infor['Forbidden'] = True
+                    point_Infor['Forbidden_left'] = True
                 elif self.distance(point_new,point_old,self.points['left_check']) == 0:
                     point_Infor['freeze'] = True
             elif self.isInside(polygon['right'], point_new):
                 point_Infor['Right'] = True
                 if self.distance(point_new,point_old,self.points['right_check'])>0:
-                    point_Infor['Forbidden'] = True
+                    point_Infor['Forbidden_right'] = True
                 elif self.distance(point_new,point_old,self.points['right_check'])==0:
                     point_Infor['freeze'] = True
         return point_Infor

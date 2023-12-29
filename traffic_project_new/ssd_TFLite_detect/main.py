@@ -18,6 +18,12 @@ import json
 import serial
 from CalcLidarData import CalcLidarData
 
+
+import RPi.GPIO as GPIO
+import time
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
 # Create a tracker based on tracker name
 trackerTypes = ['BOOSTING', 'MIL', 'KCF','TLD', 'MEDIANFLOW', 'GOTURN', 'MOSSE', 'CSRT']
 def createTrackerByName(trackerType):
@@ -232,7 +238,7 @@ def detect_lidar(ser,angle_min,angle_max,total_points,result_queue,lidar_thread_
     tmpString = ""
 
     angle_old = 0
-    list_lidar_point = list(range(total_points))
+    list_lidar_point = list(range(total_points+50))
     Index_list = 0
     while True:
         loopFlag = True
@@ -286,7 +292,7 @@ def detect_lidar(ser,angle_min,angle_max,total_points,result_queue,lidar_thread_
             flag2c = False
         if CHECK_CAM:
             CHECK_CAM = False
-            LidarData = {"datalida":list_lidar_point}  # Replace this line with the actual result
+            LidarData = {"datalida":list_lidar_point[:total_points]}  # Replace this line with the actual result
             result_queue.put(LidarData)
             lidar_thread_event.set()
 
@@ -300,6 +306,57 @@ def result_led_left():
 
 
 
+def COntrol_leds(num_led_right=17, num_led_left=27, num_led_warning=22):
+    global OUTPUT_LEDS
+     # num_led_right: ID of GPIO pin (Ex: num_led_right = 17 => GPIO17)
+    # num_led_left: ID of GPIO pin (Ex: num_led_left = 27 => GPIO27)
+    # num_led_warning: ID of GPIO pin (Ex: num_led_warning = 22 => GPIO22)
+    # led_1: integer signal of LED 1 from pip num_led_right 
+    # led_2: integer signal of LED 2 from pip num_led_left 
+    # les_3: integer signal of LED 3 from pip num_led_warning 
+
+    GPIO.setup(num_led_right,GPIO.OUT)
+    GPIO.setup(num_led_left,GPIO.OUT)
+    GPIO.setup(num_led_warning,GPIO.OUT)
+    # print("Run")
+    # GPIO.output(num_led_right,GPIO.LOW)
+    # GPIO.output(num_led_left,GPIO.LOW)
+    # GPIO.output(num_led_warning,GPIO.LOW)
+
+    while sum(OUTPUT_LEDS) > 0:
+        if OUTPUT_LEDS[0] > 0:
+            print("Led_1")
+            print("LED on")
+            GPIO.output(num_led_right,True) #GPIO.HIGH
+        else: 
+            print("LED off")
+            GPIO.output(num_led_right,False)
+        if OUTPUT_LEDS[1] > 0:
+            print("Led_2")
+            print("LED on")
+            GPIO.output(num_led_left,True)
+        else: 
+            print("LED off")
+            GPIO.output(num_led_left,False)
+        if OUTPUT_LEDS[2] > 0:
+            print("Led_3")
+            print("LED on")
+            GPIO.output(num_led_warning,True)
+        else: 
+            print("LED off")
+            GPIO.output(num_led_warning,False)
+        if max(OUTPUT_LEDS) > 1:
+            time.sleep(3)
+            if OUTPUT_LEDS[0] > 1:
+                print("LED off")
+                GPIO.output(num_led_right,True)
+            if OUTPUT_LEDS[1] > 1:
+                print("LED off")
+                GPIO.output(num_led_left,True)
+            time.sleep(3)
+
+OUTPUT_LEDS = [0,0,0]   # [RIGHT,LEFT,Warning]  on:1 off:0: blick : 2
+
 def main_process():
 
     INDEX_CHECK = 0
@@ -310,7 +367,8 @@ def main_process():
 
     NUM_CHECK_WARNING = 20
     INDEX_WARNING= 0
-    CHECK_FRAME_FORBIDDEN = np.zeros(NUM_CHECK_WARNING)
+    CHECK_FRAME_FORBIDDEN_LEFT = np.zeros(NUM_CHECK_WARNING)
+    CHECK_FRAME_FORBIDDEN_RIGHT = np.zeros(NUM_CHECK_WARNING)
     CHECK_FRAME_FREEZE = np.zeros(NUM_CHECK_WARNING)
 
 
@@ -356,6 +414,9 @@ def main_process():
     lidar_thread = Thread(target=detect_lidar, args=( ser,angle_min,angle_max,total_points,lidar_result_queue,lidar_thread_event))
     lidar_thread.start()
 
+    control_leds_thread = Thread(target=COntrol_leds,args=(num_led_right=17, num_led_left=27, num_led_warning=22))
+    control_leds_thread.start()
+
     # Counter to track the number of received results
     results_received_count = 0
     All_result = {}
@@ -368,7 +429,8 @@ def main_process():
             All_result = {
                 'Left':camera_result['Left'],
                 'Right':camera_result['Right'],
-                'Forbidden' : camera_result['Forbidden'],
+                'Forbidden_right' : camera_result['Forbidden_right'],
+                'Forbidden_left'  : camera_result['Forbidden_left'],
                 'freeze' : camera_result['freeze']
             }
             CHECK_CAM = True
@@ -411,8 +473,11 @@ def main_process():
             else:
                 INDEX_CHECK+=1
 
-            if All_result['Forbidden']:
-                CHECK_FRAME_FORBIDDEN[INDEX_WARNING] = 1
+            if All_result['Forbidden_left']:
+                CHECK_FRAME_FORBIDDEN_LEFT[INDEX_WARNING] = 1
+            if All_result['Forbidden_right']:
+                CHECK_FRAME_FORBIDDEN_RIGHT[INDEX_WARNING] = 1
+
             if All_result['freeze']:
                 CHECK_FRAME_FREEZE[INDEX_WARNING] = 1
 
@@ -422,25 +487,38 @@ def main_process():
                 INDEX_WARNING+=1
 
 
-            if sum(CHECK_FRAME_LEFT)/NUM_Check_Lidar >0.7 and  sum(CHECK_FRAME_LIDAR)/NUM_Check_Lidar >0.5  :
-                print("CALL TURN ON LEFT")
-            if sum(CHECK_FRAME_LEFT)/NUM_Check_Lidar <0.3  :
-                print("CALL TURN OFF LEFT")
+            # OUT_LED
+
+            if sum(CHECK_FRAME_FORBIDDEN_LEFT)/NUM_CHECK_WARNING >0.7 and  sum(CHECK_FRAME_LIDAR)/NUM_Check_Lidar >0.5  :
+                OUTPUT_LEDS[0] = 2
+            else:
+                if sum(CHECK_FRAME_RIGHT)/NUM_Check_Lidar >0.7 and  sum(CHECK_FRAME_LIDAR)/NUM_Check_Lidar >0.5  :
+                    OUTPUT_LEDS[0] = 1
+                if sum(CHECK_FRAME_RIGHT)/NUM_Check_Lidar <0.3  :
+                    OUTPUT_LEDS[0] = 0
 
 
-            if sum(CHECK_FRAME_RIGHT)/NUM_Check_Lidar >0.7 and  sum(CHECK_FRAME_LIDAR)/NUM_Check_Lidar >0.5  :
-                print("CALL TURN ON RIGHT")
-            if sum(CHECK_FRAME_RIGHT)/NUM_Check_Lidar <0.3  :
-                print("CALL TURN OFF RIGHT")
+            if sum(CHECK_FRAME_FORBIDDEN_RIGHT)/NUM_CHECK_WARNING >0.7 and  sum(CHECK_FRAME_LIDAR)/NUM_Check_Lidar >0.5  :
+                OUTPUT_LEDS[1] = 2
+            else:
+                if sum(CHECK_FRAME_LEFT)/NUM_Check_Lidar >0.7 and  sum(CHECK_FRAME_LIDAR)/NUM_Check_Lidar >0.5  :
+                    OUTPUT_LEDS[1] = 1
+                if sum(CHECK_FRAME_LEFT)/NUM_Check_Lidar <0.3  :
+                    OUTPUT_LEDS[1] = 0
 
 
-            if (sum(CHECK_FRAME_FORBIDDEN)/NUM_CHECK_WARNING >0.7 or sum(CHECK_FRAME_FREEZE)/NUM_CHECK_WARNING >0.7 )and  sum(CHECK_FRAME_LIDAR)/NUM_Check_Lidar >0.5  :
-                print("CALL TURN ON Warning")
-            if sum(CHECK_FRAME_FORBIDDEN)/NUM_CHECK_WARNING <0.3  :
-                print("CALL TURN OFF Warning")
+            # Check co vat can khong phai xe hoac thoi tiet xau cam ko nhan duoc
+
+            if sum(CHECK_FRAME_FREEZE)/NUM_CHECK_WARNING >0.8 and  sum(CHECK_FRAME_LIDAR)/NUM_Check_Lidar >0.5  :
+                OUTPUT_LEDS[2] = 2
+            else:
+                if  sum(CHECK_FRAME_LIDAR)/NUM_Check_Lidar >0.8 and OUTPUT_LEDS[0] ==0 and OUTPUT_LEDS[1] == 0:
+                    OUTPUT_LEDS[2] = 1
+                else:
+                    OUTPUT_LEDS[2] = 0
 
 
-            print(f"Infor : {All_result} {index_count} \n" )
+            print(f"Infor : {OUTPUT_LEDS} {index_count} \n" )
             index_count+=1
 
             All_result.clear()
@@ -458,6 +536,9 @@ def main_process():
 
     lidar_thread.join(timeout=0.1)
     lidar_thread.terminate()
+
+    control_leds_thread.join(timeout=0.1)
+    control_leds_thread.terminate()
 
     # Clean up
     cv2.destroyAllWindows()

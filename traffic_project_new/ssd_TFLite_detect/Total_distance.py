@@ -84,7 +84,6 @@ while True:
     if i == 5000:
         break
 print(data)
-
 file_path = "lidar_infor.json"
 with open(file_path,'w') as json_file:
     json.dump(data,json_file,indent=2)
