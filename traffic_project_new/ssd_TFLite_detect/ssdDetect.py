@@ -182,7 +182,7 @@ class polygon_calculate():
         mask = np.zeros_like(frame)
 
 
-        print("area:",[self.points['area']])
+        # print("area:",[self.points['area']])
         # Vẽ đa giác trắng lên mask
         cv2.fillPoly(mask, [self.points['area']],(255, 255, 255))
         # cv2.fillPoly(mask, [polygon_right], (255, 255, 255))

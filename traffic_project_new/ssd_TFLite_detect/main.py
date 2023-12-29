@@ -11,6 +11,12 @@ import sys
 import importlib.util
 from ssdDetect import polygon_calculate
 import threading
+import json
+
+
+# Import lib Lidar
+import serial
+from CalcLidarData import CalcLidarData
 
 # Create a tracker based on tracker name
 trackerTypes = ['BOOSTING', 'MIL', 'KCF','TLD', 'MEDIANFLOW', 'GOTURN', 'MOSSE', 'CSRT']
@@ -40,14 +46,53 @@ def createTrackerByName(trackerType):
             print(t)
     return tracker
 
+class VideoStream:
+    """Camera object that controls video streaming"""
+    def __init__(self,resolution=(640,480),framerate=30,STREAM_URL=''):
+        # Initialize the PiCamera and the camera image stream
+        self.stream = cv2.VideoCapture(STREAM_URL)
+        ret = self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        ret = self.stream.set(3,resolution[0])
+        ret = self.stream.set(4,resolution[1])
+            
+        # Read first frame from the stream
+        (self.grabbed, self.frame) = self.stream.read()
+
+	# Variable to control when the camera is stopped
+        self.stopped = False
+
+    def start(self):
+	# Start the thread that reads frames from the video stream
+        Thread(target=self.update,args=()).start()
+        return self
+
+    def update(self):
+        # Keep looping indefinitely until the thread is stopped
+        while True:
+            # If the camera is stopped, stop the thread
+            if self.stopped:
+                # Close camera resources
+                self.stream.release()
+                return
+
+            # Otherwise, grab the next frame from the stream
+            (self.grabbed, self.frame) = self.stream.read()
+
+    def read(self):
+	# Return the most recent frame
+        return self.frame
+
+    def stop(self):
+	# Indicate that the camera and thread should be stopped
+        self.stopped = True
 
 
 def detect_camera(videostream,imW,imH, result_queue,camera_thread_event):
     # ... (your existing code for camera detection)
     # Assuming PointsInfor is the result from camera detection
-    MODEL_NAME = ''
-    GRAPH_NAME = ""
-    LABELMAP_NAME = ""
+    MODEL_NAME = './All_Model_detect/Sample_TFLite_model'
+    GRAPH_NAME = "detect.tflite"
+    LABELMAP_NAME = "labelmap.txt"
     min_conf_threshold = float(0.5)
     JSON_PATH = 'polygon.json'
 
@@ -145,6 +190,7 @@ def detect_camera(videostream,imW,imH, result_queue,camera_thread_event):
     num_frame_to_detect = 5
 
     while(True):
+        # print("Start \n")
         # Acquire frame and resize to expected shape [1xHxWx3]
         frame = videostream.read()
 
@@ -155,7 +201,7 @@ def detect_camera(videostream,imW,imH, result_queue,camera_thread_event):
 
         if count == num_frame_to_detect:
             controids = polygon_cal.centroid(boxes_update)
-            PointsInfor = polygon_cal.check_result(controids,centroids_old,frame)
+            PointsInfor = polygon_cal.check_result(controids,centroids_old)
             # print(f"Information point:{PointsInfor}  \n")
             result_queue.put(PointsInfor)
             count = 0
@@ -169,69 +215,131 @@ def detect_camera(videostream,imW,imH, result_queue,camera_thread_event):
                 box_track = (bbox[0],bbox[1],bbox[2]-bbox[0],bbox[3]-bbox[1])
                 multiTracker.add(createTrackerByName(trackerType), frame, box_track)
     
-            if len(scores)==0:
-                count=-1
+            # if len(scores)==0:
+            #     count=-1
         count+=1
+        # print(count)
+        # cv2.imshow('Object detector 1', frame)
 
 
-def detect_lidar(result_queue,lidar_thread_event):
-   
+
+CHECK_CAM = False
+
+def detect_lidar(ser,angle_min,angle_max,total_points,result_queue,lidar_thread_event):
+
+    global CHECK_CAM
+
+    tmpString = ""
+
+    angle_old = 0
+    list_lidar_point = list(range(total_points))
+    Index_list = 0
     while True:
-        cv2.waitKey(25)
-        LidarData = {"datalida":"Lidar"}  # Replace this line with the actual result
-        result_queue.put(LidarData)
-        lidar_thread_event.set()
+        loopFlag = True
+        flag2c = False
 
-class VideoStream:
-    """Camera object that controls video streaming"""
-    def __init__(self,resolution=(640,480),framerate=30,STREAM_URL=''):
-        # Initialize the PiCamera and the camera image stream
-        self.stream = cv2.VideoCapture(STREAM_URL)
-        ret = self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-        ret = self.stream.set(3,resolution[0])
-        ret = self.stream.set(4,resolution[1])
-            
-        # Read first frame from the stream
-        (self.grabbed, self.frame) = self.stream.read()
+        while loopFlag:
+            b = ser.read()
+            tmpInt = int.from_bytes(b, 'big')
 
-	# Variable to control when the camera is stopped
-        self.stopped = False
+            if tmpInt == 0x54:
+                tmpString += b.hex() + " "
+                flag2c = True
+                continue
 
-    def start(self):
-	# Start the thread that reads frames from the video stream
-        Thread(target=self.update,args=()).start()
-        return self
+            elif tmpInt == 0x2c and flag2c:
+                tmpString += b.hex()
 
-    def update(self):
-        # Keep looping indefinitely until the thread is stopped
-        while True:
-            # If the camera is stopped, stop the thread
-            if self.stopped:
-                # Close camera resources
-                self.stream.release()
-                return
+                if not len(tmpString[0:-5].replace(' ', '')) == 90:
+                    tmpString = ""
+                    loopFlag = False
+                    flag2c = False
+                    continue
 
-            # Otherwise, grab the next frame from the stream
-            (self.grabbed, self.frame) = self.stream.read()
+                lidarData = CalcLidarData(tmpString[0:-5])
+                # print(f"lidar information: Distance{lidarData.Distance_i} angle : {lidarData.Angle_i} \n")
+                # print(f"lidar information: Sum Distance{sum(lidarData.Distance_i)} len_distance {len(lidarData.Distance_i)} \n")
+                # print(f"lidar information: start {lidarData.Angle_i[0]} end {lidarData.Angle_i[11]} len_distance {len(lidarData.Distance_i)} \n")
+                # add point lidar
+                
+                
+                for angle,distance in zip(lidarData.Angle_i,lidarData.Distance_i):
+                    if  angle > angle_min and angle< angle_max:
+                        if  angle > angle_old:
+                            list_lidar_point[Index_list] = distance
+                            Index_list+=1
+                            angle_old = angle
+                        else:
 
-    def read(self):
-	# Return the most recent frame
-        return self.frame
+                            Index_list = 0
+                            list_lidar_point[Index_list] = distance
+                            Index_list+=1
+                            angle_old = angle
 
-    def stop(self):
-	# Indicate that the camera and thread should be stopped
-        self.stopped = True
+                tmpString = ""
+                loopFlag = False
+
+
+            else:
+                tmpString += b.hex() + " "
+
+            flag2c = False
+        if CHECK_CAM:
+            CHECK_CAM = False
+            LidarData = {"datalida":list_lidar_point}  # Replace this line with the actual result
+            result_queue.put(LidarData)
+            lidar_thread_event.set()
+
+
+def result_led_right(): 
+    print("Turn on right \n")
+
+
+def result_led_left():
+    print("Turn on left \n")
+
 
 
 def main_process():
 
-    # Open video file
+    INDEX_CHECK = 0
+    NUM_Check_Lidar = 15
+    CHECK_FRAME_LIDAR = np.zeros(NUM_Check_Lidar)
+    CHECK_FRAME_LEFT = np.zeros(NUM_Check_Lidar)
+    CHECK_FRAME_RIGHT = np.zeros(NUM_Check_Lidar)
+
+    NUM_CHECK_WARNING = 20
+    INDEX_WARNING= 0
+    CHECK_FRAME_FORBIDDEN = np.zeros(NUM_CHECK_WARNING)
+    CHECK_FRAME_FREEZE = np.zeros(NUM_CHECK_WARNING)
+
+
+    global CHECK_CAM
+    # Connect Camera IP
     VIDEO_PATH = 'rtsp://admin2:Atlab123@@192.168.1.64:554/Streaming/Channels/101'
 
     imW,imH = 1280,720
-    # Initialize video stream
     videostream = VideoStream(resolution=(imW,imH),framerate=25,STREAM_URL= VIDEO_PATH).start()
     time.sleep(1)
+
+    # Connect Lidar port
+    ser = serial.Serial(port='/dev/ttyS0',
+                    baudrate=230400,
+                    timeout=5.0,
+                    bytesize=8,
+                    parity='N',
+                    stopbits=1)
+
+    Lidar_path_json = 'lidar_infor.json'
+    with open(Lidar_path_json,'r') as json_file:
+        Lidar_infor = json.load(json_file)
+
+    angle_min = Lidar_infor['angle_min']
+    angle_max = Lidar_infor['angle_max']
+    total_points = Lidar_infor['Len_points']
+    Sum_distance_max = Lidar_infor['Sum_distance']
+
+    Mean_err = 2
 
     # Initialize Queues to pass data between threads
     camera_result_queue = queue.Queue()
@@ -245,40 +353,97 @@ def main_process():
     camera_thread.start()
 
     # Create and start the lidar detection thread
-    lidar_thread = Thread(target=detect_lidar, args=(lidar_result_queue,lidar_thread_event))
+    lidar_thread = Thread(target=detect_lidar, args=( ser,angle_min,angle_max,total_points,lidar_result_queue,lidar_thread_event))
     lidar_thread.start()
 
     # Counter to track the number of received results
     results_received_count = 0
-
+    All_result = {}
+    
+    index_count = 0
     while True:
         try:
             # Retrieve camera detection result from the Queue
             camera_result = camera_result_queue.get()
-            print(f"Camera Detection Result: {camera_result}\n")
-            
+            All_result = {
+                'Left':camera_result['Left'],
+                'Right':camera_result['Right'],
+                'Forbidden' : camera_result['Forbidden'],
+                'freeze' : camera_result['freeze']
+            }
+            CHECK_CAM = True
             # Process the camera_result as needed
 
             # Increment the counter
             results_received_count += 1
-        except queue.Empty:
+        except camera_result_queue.Empty:
             pass
 
         try:
             # Retrieve lidar detection result from the Queue
             lidar_result = lidar_result_queue.get()
-            print(f"Lidar Detection Result: {lidar_result}\n")
-            
-            # Process the lidar_result as needed
+            #print(f"Lidar Detection Result: {len(lidar_result['datalida']) } sum_distance : {sum(lidar_result['datalida'])}\n")
+            SUM_DISTANCE = sum(lidar_result['datalida'])
 
+            if (abs(SUM_DISTANCE- Sum_distance_max) > (Mean_err* total_points)):
+
+                All_result['Lidar_infor'] = True
+            else:
+                All_result['Lidar_infor'] = False
             # Increment the counter
             results_received_count += 1
-        except queue.Empty:
+        except lidar_result_queue.Empty:
             pass
 
         # Check if both camera and lidar results have been received
         if results_received_count >= 2:
             # Toggle the camera thread event to be used again
+            # CONTROL LED
+
+            if All_result['Lidar_infor']:
+                CHECK_FRAME_LIDAR[INDEX_CHECK] = 1
+            if All_result['Left']:
+                CHECK_FRAME_LEFT[INDEX_CHECK] = 1
+            if All_result['Right']:
+                CHECK_FRAME_RIGHT[INDEX_CHECK] = 1
+            if INDEX_CHECK == NUM_Check_Lidar -1:
+                INDEX_CHECK = 0
+            else:
+                INDEX_CHECK+=1
+
+            if All_result['Forbidden']:
+                CHECK_FRAME_FORBIDDEN[INDEX_WARNING] = 1
+            if All_result['freeze']:
+                CHECK_FRAME_FREEZE[INDEX_WARNING] = 1
+
+            if INDEX_WARNING == NUM_CHECK_WARNING -1:
+                INDEX_WARNING = 0
+            else:
+                INDEX_WARNING+=1
+
+
+            if sum(CHECK_FRAME_LEFT)/NUM_Check_Lidar >0.7 and  sum(CHECK_FRAME_LIDAR)/NUM_Check_Lidar >0.5  :
+                print("CALL TURN ON LEFT")
+            if sum(CHECK_FRAME_LEFT)/NUM_Check_Lidar <0.3  :
+                print("CALL TURN OFF LEFT")
+
+
+            if sum(CHECK_FRAME_RIGHT)/NUM_Check_Lidar >0.7 and  sum(CHECK_FRAME_LIDAR)/NUM_Check_Lidar >0.5  :
+                print("CALL TURN ON RIGHT")
+            if sum(CHECK_FRAME_RIGHT)/NUM_Check_Lidar <0.3  :
+                print("CALL TURN OFF RIGHT")
+
+
+            if (sum(CHECK_FRAME_FORBIDDEN)/NUM_CHECK_WARNING >0.7 or sum(CHECK_FRAME_FREEZE)/NUM_CHECK_WARNING >0.7 )and  sum(CHECK_FRAME_LIDAR)/NUM_Check_Lidar >0.5  :
+                print("CALL TURN ON Warning")
+            if sum(CHECK_FRAME_FORBIDDEN)/NUM_CHECK_WARNING <0.3  :
+                print("CALL TURN OFF Warning")
+
+
+            print(f"Infor : {All_result} {index_count} \n" )
+            index_count+=1
+
+            All_result.clear()
             camera_thread_event.clear()
             lidar_thread_event.clear()
             results_received_count = 0  # Reset the counter
